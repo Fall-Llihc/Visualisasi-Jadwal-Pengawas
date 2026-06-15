@@ -1,5 +1,5 @@
 // data.js — AUTO-GENERATED oleh GitHub Actions. JANGAN EDIT MANUAL.
-// Generated: 2026-06-15 20:23:34 UTC
+// Generated: 2026-06-15 23:01:05 UTC
 (function () {
   var HARI  = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
   var BULAN = ['Januari','Februari','Maret','April','Mei','Juni','Juli',
@@ -233,7 +233,7 @@
     };
   };
 
-  window.LAST_UPDATE_RAW   = '2026-06-15 20:23:34';
+  window.LAST_UPDATE_RAW   = '2026-06-15 23:01:05';
   window.GITHUB_REPO       = 'Fall-Llihc/visualiasi_jadwal_ujian';
   window.DATA_ROWS         = 415;
   window.DATA_PROCTORS     = 125;
