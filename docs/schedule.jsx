@@ -29,7 +29,9 @@ function RoleBadge({role}) {
 
 /* ── Schedule Card ── */
 function ScheduleCard({item, conflict}) {
-  var ses = SESSIONS[item.session];
+  var ses = SESSIONS[item.session] || { color: '#888', time: 'Sesi ' + item.session };
+  // item.time hanya ada kalau jam selesai entry ini beda dari label sesinya.
+  var timeLabel = item.time || ses.time;
   var borderColor = conflict ? '#e06060' : ses.color;
 
   // Section badge — selalu ditampilkan di bawah badge P1/P2.
@@ -57,7 +59,7 @@ function ScheduleCard({item, conflict}) {
     <div className="scard" style={{borderLeftColor: borderColor}}>
       <div className="scard-top">
         <span className="scard-time" style={{color: ses.color}}>
-          <IconClock /> {ses.time}
+          <IconClock /> {timeLabel}
         </span>
         <div className="scard-badges">
           <RoleBadge role={item.role} />
@@ -75,6 +77,12 @@ function ScheduleCard({item, conflict}) {
         </span>
         <span className="scard-meta-sep">·</span>
         <span className="scard-meta-item">{item.type}</span>
+        {item.dateRange && (
+          <>
+            <span className="scard-meta-sep">·</span>
+            <span className="scard-meta-item" title="Ujian berlangsung dalam rentang tanggal">{item.dateRange}</span>
+          </>
+        )}
       </div>
       {item.partner && (
         <div className="scard-partner">
@@ -112,11 +120,21 @@ function AgendaConflictAlert({agenda, sessionNums}) {
   );
 }
 
+/* Urutkan nomor sesi berdasarkan jam mulai (sesi tambahan bernomor ≥6 bisa
+   mulai lebih pagi dari sesi resmi, mis. 10.00). */
+function sortSessionsByStart(nums) {
+  return nums.slice().sort(function (a, b) {
+    var sa = SESSIONS[a] ? SESSIONS[a].start : '99:99';
+    var sb = SESSIONS[b] ? SESSIONS[b].start : '99:99';
+    return sa < sb ? -1 : sa > sb ? 1 : a - b;
+  });
+}
+
 /* ── Day section (collapsible) ── */
 function DaySection({date, items, allSchedule, dayAgendas}) {
   const [open, setOpen] = React.useState(true);
 
-  var sessionNums = [...new Set(items.map(i => i.session))].sort();
+  var sessionNums = sortSessionsByStart([...new Set(items.map(i => i.session))]);
   var hasSchedConflict = sessionNums.some(s => isSessionConflict(allSchedule, date, s));
 
   // Cek tiap agenda eksternal — apakah bertabrakan dengan sesi pengawasan di hari ini.
@@ -206,6 +224,10 @@ function ScheduleView({proctor, agendas}) {
   });
   var dates = Object.keys(dateMap).sort();
 
+  // Legend: hanya sesi yang dimiliki pengawas ini
+  var legendSessions = sortSessionsByStart([...new Set(sch.map(s => s.session))])
+    .filter(s => SESSIONS[s]);
+
   // Kelompokkan agenda eksternal per tanggal (untuk dilewatkan ke DaySection
   // demi deteksi konflik — TIDAK akan dirender sebagai sesi).
   var agendaMap = {};
@@ -290,7 +312,7 @@ function ScheduleView({proctor, agendas}) {
 
       {/* Legend */}
       <div className="legend-row">
-        {[1,2,3].map(s => (
+        {legendSessions.map(s => (
           <div key={s} className="legend-item">
             <span className="legend-dot" style={{background: SESSIONS[s].color}}></span>
             <span>{SESSIONS[s].time}</span>
@@ -320,7 +342,7 @@ function EmptyState() {
     <div className="empty-state">
       <div className="empty-icon"><IconCalendar /></div>
       <h2>Selamat datang di NgawasChill</h2>
-      <p>Masukkan NIM di sidebar untuk melihat jadwal pengawasan UAS.</p>
+      <p>Masukkan NIM di sidebar untuk melihat jadwal pengawasan ujian.</p>
     </div>
   );
 }

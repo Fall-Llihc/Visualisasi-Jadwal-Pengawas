@@ -2,7 +2,9 @@ name: Sync Jadwal dari SharePoint
 
 on:
   schedule:
-    - cron: '0 * * * *'   # tiap jam — ubah sesuai kebutuhan
+    # Tiap 10 menit. Batas minimal GitHub 5 menit; saat GitHub sibuk jadwal
+    # bisa molor beberapa menit. Run tanpa perubahan data tidak membuat commit.
+    - cron: '*/10 * * * *'
 
   workflow_dispatch:
     inputs:
@@ -17,6 +19,11 @@ on:
       - '.github/workflows/sync_jadwal.yml'
       - 'scripts/fetch_jadwal.py'
       - 'scripts/generate_data_js.py'
+
+# Cegah dua run (cron + manual) push bersamaan
+concurrency:
+  group: sync-jadwal
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -64,17 +71,20 @@ jobs:
             echo "no_changes=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Step 3: Konversi CSV → docs/data.js (memakai git log dari folder data/)
+      # Step 3: Konversi CSV → docs/data.js + data.json + version.json
+      # (memakai git log dari folder data/)
       - name: Generate data.js untuk frontend
         run: python scripts/generate_data_js.py
 
       # Step 4: Commit data.js dan push semua
       - name: Commit data.js dan push
         run: |
-          git add -f docs/data.js
+          git add -f docs/data.js docs/data.json docs/version.json
           if git diff --staged --quiet && [ "${{ steps.commit_data.outputs.no_changes }}" = "true" ]; then
             echo "Tidak ada perubahan untuk dipush."
           else
             git diff --staged --quiet || git commit -m "chore: regenerate data.js $(date -u '+%Y-%m-%d %H:%M UTC')"
+            # Kalau ada commit baru di main selama run (mis. push kode), rebase dulu
+            git pull --rebase origin main
             git push
           fi

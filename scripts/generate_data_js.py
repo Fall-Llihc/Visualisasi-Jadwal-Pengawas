@@ -1,46 +1,43 @@
 """
 generate_data_js.py
-Konversi data/jadwal.csv → docs/data.js
+Konversi data/jadwal.csv → docs/data.js + docs/data.json + docs/version.json
 Dijalankan oleh GitHub Actions setelah fetch_jadwal.py selesai.
+
+- data.js      : di-load saat halaman dibuka (render pertama tanpa fetch tambahan)
+- version.json : kecil, di-poll frontend tiap beberapa menit
+- data.json    : payload lengkap, hanya diambil frontend kalau versi berubah
 """
 
-import os, sys, json, csv, re, subprocess
+import os, sys, json, csv, re, subprocess, hashlib
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 
-CSV_PATH = "data/jadwal.csv"
-OUT_PATH = "docs/data.js"
+CSV_PATH          = "data/jadwal.csv"
+OUT_PATH          = "docs/data.js"
+OUT_JSON_PATH     = "docs/data.json"
+OUT_VERSION_PATH  = "docs/version.json"
 
-# Mapping waktu → nomor sesi (sesuai format data.js frontend)
-SLOT_TO_SESSION = {
-    '08.00 - 10.15 WIB': 1,
-    '10.45 - 13.00 WIB': 2,
-    '14.00 - 16.15 WIB': 3,
-    '16.00 - 18.00 WIB': 4,
-    '18.30 - 20.30 WIB': 5,
-}
+# Nomor sesi resmi ditentukan oleh JAM MULAI. Jam selesai boleh berbeda antar
+# periode (mis. 18.30-20.30 di UAS, 18.30-20.00 di UTS) — label & rentang
+# diambil dari data aktual, jadi tidak perlu edit script tiap ganti periode.
+CANONICAL_STARTS = {"08.00": 1, "10.45": 2, "14.00": 3, "16.00": 4, "18.30": 5}
 
-# Rentang jam tiap sesi (untuk deteksi konflik agenda eksternal di frontend)
-SESSION_TIME_RANGES = {
-    1: ["08:00", "10:15"],
-    2: ["10:45", "13:00"],
-    3: ["14:00", "16:15"],
-    4: ["16:00", "18:00"],
-    5: ["18:30", "20:30"],
+SESSION_COLORS = {
+    1: ("#A8DADC", "rgba(168,218,220,0.10)"),
+    2: ("#FFC1CC", "rgba(255,193,204,0.10)"),
+    3: ("#B39CD0", "rgba(179,156,208,0.10)"),
+    4: ("#FFD580", "rgba(255,213,128,0.10)"),
+    5: ("#e06060", "rgba(224,96,96,0.10)"),
 }
+# Warna untuk sesi tambahan (jam mulai di luar CANONICAL_STARTS) → sesi 6, 7, ...
+EXTRA_COLORS = [
+    ("#6BCB77", "rgba(107,203,119,0.10)"),
+    ("#F4A261", "rgba(244,162,97,0.10)"),
+    ("#7FB3FF", "rgba(127,179,255,0.10)"),
+    ("#E9C46A", "rgba(233,196,106,0.10)"),
+]
 
-# Mapping sesi → label & warna (untuk SESSIONS di JS)
-SESSIONS_JS = {
-    1: {"label": "Sesi 1", "time": "08.00 – 10.15 WIB", "color": "#A8DADC", "bg": "rgba(168,218,220,0.10)",
-        "start": "08:00", "end": "10:15"},
-    2: {"label": "Sesi 2", "time": "10.45 – 13.00 WIB", "color": "#FFC1CC", "bg": "rgba(255,193,204,0.10)",
-        "start": "10:45", "end": "13:00"},
-    3: {"label": "Sesi 3", "time": "14.00 – 16.15 WIB", "color": "#B39CD0", "bg": "rgba(179,156,208,0.10)",
-        "start": "14:00", "end": "16:15"},
-    4: {"label": "Sesi 4", "time": "16.00 – 18.00 WIB", "color": "#FFD580", "bg": "rgba(255,213,128,0.10)",
-        "start": "16:00", "end": "18:00"},
-    5: {"label": "Sesi 5", "time": "18.30 – 20.30 WIB", "color": "#e06060", "bg": "rgba(224,96,96,0.10)",
-        "start": "18:30", "end": "20:30"},
-}
+JAM_RE = re.compile(r"^(\d{2})\.(\d{2}) - (\d{2})\.(\d{2}) WIB$")
 
 BULAN_STR_TO_NUM = {
     'januari':'01','februari':'02','maret':'03','april':'04','mei':'05','juni':'06',
@@ -73,6 +70,14 @@ def normalize_nim(v: str) -> str:
     return s.upper()
 
 
+DATE_RANGE_RE = re.compile(r"^(\d{1,2})\s*[-–—]\s*\d{1,2}\s+([A-Za-z]+)\s+(\d{4})$")
+
+
+def is_date_range(tanggal: str) -> bool:
+    """True untuk rentang tanggal seperti '07 - 10 November 2026' (ujian online PJJ)."""
+    return bool(DATE_RANGE_RE.match(str(tanggal).strip()))
+
+
 def to_iso_date(tanggal: str) -> str:
     """Konversi berbagai format tanggal → ISO 'YYYY-MM-DD'.
 
@@ -81,10 +86,16 @@ def to_iso_date(tanggal: str) -> str:
       - '2026-06-22 00:00:00'  (format dari Excel/SharePoint)
       - '22/06/2026' atau '22-06-2026'
       - 'Senin, 22 Juni 2026'
+      - '07 - 10 November 2026'  (rentang → tanggal mulai)
     """
     s = str(tanggal).strip()
     if not s:
         return ""
+
+    m = DATE_RANGE_RE.match(s)
+    if m:
+        mm = BULAN_STR_TO_NUM.get(m.group(2).lower(), '00')
+        return f"{m.group(3)}-{mm}-{m.group(1).zfill(2)}"
 
     # 1) Sudah ISO (dengan / tanpa komponen waktu)
     m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
@@ -124,11 +135,51 @@ def normalize_jam(jam: str) -> str:
     if "WIB" not in s.upper():
         s = s + " WIB"
     s = re.sub(r"\s+", " ", s).strip()
-    # Cek apakah cocok dengan salah satu slot
-    for slot in SLOT_TO_SESSION.keys():
-        if s.upper().replace(" ", "") == slot.upper().replace(" ", ""):
-            return slot
+    s = re.sub(r"wib$", "WIB", s, flags=re.IGNORECASE)
     return s
+
+
+def parse_jam(jam_norm: str):
+    """'08.00 - 10.15 WIB' → ('08.00', '10.15'). None kalau format tidak dikenal."""
+    m = JAM_RE.match(jam_norm)
+    if not m:
+        return None
+    return f"{m.group(1)}.{m.group(2)}", f"{m.group(3)}.{m.group(4)}"
+
+
+def jam_label(start: str, end: str) -> str:
+    return f"{start} – {end} WIB"
+
+
+def build_sessions(rows):
+    """Bangun tabel sesi dari slot jam yang benar-benar ada di data.
+
+    Return (start_to_session, sessions_js, session_time_ranges).
+    """
+    ends_by_start: dict = {}
+    for row in rows:
+        parsed = parse_jam(normalize_jam(row.get("Jam", "")))
+        if parsed:
+            ends_by_start.setdefault(parsed[0], Counter())[parsed[1]] += 1
+
+    start_to_session = {s: n for s, n in CANONICAL_STARTS.items() if s in ends_by_start}
+    extra_starts = sorted(s for s in ends_by_start if s not in CANONICAL_STARTS)
+    for i, s in enumerate(extra_starts):
+        start_to_session[s] = max(CANONICAL_STARTS.values()) + 1 + i
+
+    sessions_js, ranges = {}, {}
+    for start, num in sorted(start_to_session.items(), key=lambda kv: kv[1]):
+        ends = ends_by_start[start]
+        label_end = ends.most_common(1)[0][0]
+        max_end = max(ends)  # rentang terlebar → deteksi konflik agenda konservatif
+        color, bg = SESSION_COLORS.get(num) or EXTRA_COLORS[(num - 6) % len(EXTRA_COLORS)]
+        sessions_js[num] = {
+            "label": f"Sesi {num}", "time": jam_label(start, label_end),
+            "color": color, "bg": bg,
+            "start": start.replace(".", ":"), "end": max_end.replace(".", ":"),
+        }
+        ranges[num] = [start.replace(".", ":"), max_end.replace(".", ":")]
+    return start_to_session, sessions_js, ranges
 
 
 def clean_name(v: str) -> str:
@@ -168,6 +219,16 @@ with open(CSV_PATH, encoding="utf-8-sig") as f:
 
 print(f"Read {len(rows)} rows from {CSV_PATH}")
 
+START_TO_SESSION, SESSIONS_JS, SESSION_TIME_RANGES = build_sessions(rows)
+for num, ses in SESSIONS_JS.items():
+    print(f"  Sesi {num}: {ses['time']}")
+
+
+def session_of(jam_norm: str) -> int:
+    parsed = parse_jam(jam_norm)
+    return START_TO_SESSION.get(parsed[0], 0) if parsed else 0
+
+
 # ── Build PROCTOR_DB ─────────────────────────────────────────────────────────
 proctors = {}   # nim → {name, nim, schedule:[]}
 uid      = 1
@@ -182,7 +243,7 @@ for row in rows:
     if not tanggal_raw or not jam_raw:
         continue
     jam_n = normalize_jam(jam_raw)
-    if jam_n not in SLOT_TO_SESSION:
+    if not session_of(jam_n):
         continue
     key = (
         to_iso_date(tanggal_raw),
@@ -214,7 +275,7 @@ for row in rows:
         continue
 
     jam = normalize_jam(jam_raw)
-    session_num = SLOT_TO_SESSION.get(jam, 0)
+    session_num = session_of(jam)
     if session_num == 0:
         skipped_slot += 1
         if skipped_slot <= 5:
@@ -276,6 +337,12 @@ for row in rows:
             entry["section"] = section_info
         if is_international(kelas):
             entry["intl"] = True
+        # Jam selesai berbeda dari label sesi (mis. sesi 5 berisi 20.00 & 20.30)
+        entry_time = jam_label(*parse_jam(jam))
+        if entry_time != SESSIONS_JS[session_num]["time"]:
+            entry["time"] = entry_time
+        if is_date_range(tanggal_raw):
+            entry["dateRange"] = tanggal_raw
 
         proctors[nim]["schedule"].append(entry)
         uid += 1
@@ -293,10 +360,23 @@ sessions_json    = json.dumps(SESSIONS_JS,        ensure_ascii=False, indent=2)
 proctor_db_json  = json.dumps(proctors,           ensure_ascii=False, separators=(",", ":"))
 session_ranges_json = json.dumps(SESSION_TIME_RANGES, ensure_ascii=False)
 
+all_dates = sorted(
+    e["date"] for p in proctors.values() for e in p["schedule"]
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", e["date"])
+)
+date_min = all_dates[0] if all_dates else ""
+date_max = all_dates[-1] if all_dates else ""
+
+# Versi = hash isi data (bukan timestamp) → frontend hanya re-fetch kalau data
+# benar-benar berubah, dan file tidak berubah kalau tidak ada perubahan data.
+data_version = hashlib.sha1(
+    (sessions_json + session_ranges_json + proctor_db_json).encode("utf-8")
+).hexdigest()[:12]
+
 os.makedirs("docs", exist_ok=True)
 
 # GitHub repo info untuk frontend bisa fetch commit time terbaru via API (fallback)
-GITHUB_REPO = "Fall-Llihc/visualiasi_jadwal_ujian"
+GITHUB_REPO = "Fall-Llihc/Visualisasi-Jadwal-Pengawas"
 
 js_content = f"""// data.js — AUTO-GENERATED oleh GitHub Actions. JANGAN EDIT MANUAL.
 // Generated: {ts_raw} UTC
@@ -497,6 +577,40 @@ js_content = f"""// data.js — AUTO-GENERATED oleh GitHub Actions. JANGAN EDIT 
   window.DATA_ROWS         = {len(rows)};
   window.DATA_PROCTORS     = {len(proctors)};
   window.DATA_SESSIONS     = {total_entries};
+  window.DATA_VERSION      = '{data_version}';
+  window.DATA_DATE_MIN     = '{date_min}';
+  window.DATA_DATE_MAX     = '{date_max}';
+
+  // Live update: poll version.json (kecil); kalau versinya beda, ambil data.json
+  // lalu timpa global. cb(payload) hanya dipanggil kalau data benar-benar berubah.
+  window.fetchLatestData = function (cb) {{
+    var bust = '?t=' + Date.now();
+    fetch('version.json' + bust, {{ cache: 'no-store' }}).then(function (r) {{
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }}).then(function (v) {{
+      if (!v || !v.version || v.version === window.DATA_VERSION) return null;
+      return fetch('data.json' + bust, {{ cache: 'no-store' }}).then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }});
+    }}).then(function (d) {{
+      if (!d || !d.proctors) return;
+      window.SESSIONS            = d.sessions;
+      window.SESSION_TIME_RANGES = d.sessionRanges;
+      window.PROCTOR_DB          = d.proctors;
+      window.LAST_UPDATE_RAW     = d.lastUpdate;
+      window.DATA_ROWS           = d.rows;
+      window.DATA_PROCTORS       = d.proctorCount;
+      window.DATA_SESSIONS       = d.sessionCount;
+      window.DATA_VERSION        = d.version;
+      window.DATA_DATE_MIN       = d.dateMin;
+      window.DATA_DATE_MAX       = d.dateMax;
+      cb(d);
+    }}).catch(function (err) {{
+      console.warn('fetchLatestData gagal:', err);
+    }});
+  }};
 
   // Fetch waktu commit terakhir folder /data via GitHub API → akurat ke detik.
   // Fallback: pakai LAST_UPDATE_RAW kalau API gagal / offline.
@@ -528,6 +642,24 @@ js_content = f"""// data.js — AUTO-GENERATED oleh GitHub Actions. JANGAN EDIT 
 with open(OUT_PATH, "w", encoding="utf-8") as f:
     f.write(js_content)
 
+payload = {
+    "version":       data_version,
+    "lastUpdate":    ts_raw,
+    "rows":          len(rows),
+    "proctorCount":  len(proctors),
+    "sessionCount":  total_entries,
+    "dateMin":       date_min,
+    "dateMax":       date_max,
+    "sessions":      SESSIONS_JS,
+    "sessionRanges": SESSION_TIME_RANGES,
+    "proctors":      proctors,
+}
+with open(OUT_JSON_PATH, "w", encoding="utf-8") as f:
+    json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+with open(OUT_VERSION_PATH, "w", encoding="utf-8") as f:
+    json.dump({"version": data_version, "lastUpdate": ts_raw}, f)
+
 print(f"✓ Generated {OUT_PATH} ({len(js_content):,} bytes)")
 print(f"  LAST_UPDATE_RAW = {ts_raw}")
 print(f"  DATA_ROWS = {len(rows)}, PROCTORS = {len(proctors)}, SESSIONS = {total_entries}")
+print(f"  DATA_VERSION = {data_version} → {OUT_JSON_PATH}, {OUT_VERSION_PATH}")

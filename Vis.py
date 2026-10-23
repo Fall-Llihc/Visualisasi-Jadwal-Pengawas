@@ -160,17 +160,26 @@ html, body, [class*="css"] {
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-GITHUB_REPO         = "Fall-Llihc/visualiasi_jadwal_ujian"
+GITHUB_REPO         = "Fall-Llihc/Visualisasi-Jadwal-Pengawas"
 RAW_DATA_URL        = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/data/jadwal.csv"
 RAW_TS_URL          = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/data/last_updated.txt"
 GITHUB_API_DISPATCH = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/sync_jadwal.yml/dispatches"
 GITHUB_API_COMMITS  = f"https://api.github.com/repos/{GITHUB_REPO}/commits"
 
-SHAREPOINT_URL = (
-    "https://telkomuniversityofficial-my.sharepoint.com/:x:/g/personal/"
-    "informaticslab_telkomuniversity_ac_id/"
-    "IQDW93EEnbLMRJk2doiuFr_sAQYxTOFEXJm_Jf5cfIhhHWk?e=Zh4B0W&download=1"
-)
+# Link SharePoint disimpan di Streamlit Secrets (SHAREPOINT_URL), sama seperti
+# GitHub Secrets di workflow — file sumber berisi data pribadi pengawas, jadi
+# link-nya tidak di-hardcode di repo publik.
+def _get_sharepoint_url() -> str:
+    try:
+        url = str(st.secrets.get("SHAREPOINT_URL", "")).strip()
+    except Exception:
+        url = ""
+    if url and "download=1" not in url:
+        url += ("&" if "?" in url else "?") + "download=1"
+    return url
+
+
+SHAREPOINT_URL = _get_sharepoint_url()
 
 DEFAULT_INTERVAL_MIN = 60
 
@@ -405,6 +414,8 @@ def _fetch_from_sharepoint(_dummy: int = 0):
         "Accept": "application/octet-stream,*/*;q=0.8",
         "Accept-Encoding": "identity",
     }
+    if not SHAREPOINT_URL:
+        return None, "SHAREPOINT_URL belum diset di Streamlit Secrets."
     try:
         resp = requests.get(SHAREPOINT_URL, headers=headers, timeout=30, allow_redirects=True)
     except Exception as ex:
@@ -419,6 +430,8 @@ def _fetch_from_sharepoint(_dummy: int = 0):
     if resp.status_code != 200:
         return None, f"HTTP {resp.status_code}."
     if "html" in ct.lower():
+        if "login.microsoftonline.com" in resp.url:
+            return None, "SharePoint minta login — set link sharing ke 'Anyone'."
         return None, "SharePoint mengembalikan HTML."
     if sz < 500:
         return None, f"Response terlalu kecil ({sz} B)."
@@ -751,7 +764,7 @@ if st.session_state.df is None and st.session_state.data_error is None:
 # Header
 st.markdown(
     "<p class='mv-sup'>🛠 Dashboard Admin</p>"
-    "<h1 class='mv-name'>Sinkronisasi Jadwal UAS</h1>"
+    "<h1 class='mv-name'>Sinkronisasi Jadwal Ujian</h1>"
     "<div class='mv-badges'>"
     f"<span class='mv-badge'>{e(GITHUB_REPO)}</span>"
     "<span class='mv-meta'>Folder data dipantau: <code style='color:#A8DADC'>data/</code></span>"

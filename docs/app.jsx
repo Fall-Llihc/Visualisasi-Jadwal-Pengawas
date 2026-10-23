@@ -6,6 +6,9 @@ const SvgMenu = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
 );
 
+/* Interval cek data baru (version.json kecil; data.json hanya diambil kalau berubah) */
+const DATA_POLL_MS = 3 * 60 * 1000;
+
 /* Helper: cek apakah viewport mobile (≤860px) */
 function isMobileViewport() {
   return typeof window !== 'undefined' && window.matchMedia('(max-width: 860px)').matches;
@@ -16,6 +19,7 @@ function App() {
   const [searchError, setSearchError] = useState('');
   const [proctor, setProctor] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(window.LAST_UPDATE_RAW || '');
+  const [dataRows, setDataRows] = useState(window.DATA_ROWS || 0);
   const [agendas, setAgendas] = useState(() => {
     try { return JSON.parse(localStorage.getItem('vj_agendas') || '[]'); }
     catch { return []; }
@@ -96,6 +100,26 @@ function App() {
     }
   }, []);
 
+  // Live update: cek data baru berkala + saat tab kembali aktif, tanpa reload.
+  // Jadwal pengawas yang sedang dibuka ikut diganti dengan versi terbaru.
+  useEffect(() => {
+    if (typeof window.fetchLatestData !== 'function') return;
+    function poll() {
+      if (document.hidden) return;
+      window.fetchLatestData(function (d) {
+        setLastUpdate(d.lastUpdate || '');
+        setDataRows(d.rows || 0);
+        setProctor(prev => (prev ? (PROCTOR_DB[prev.nim] || null) : prev));
+      });
+    }
+    const id = setInterval(poll, DATA_POLL_MS);
+    document.addEventListener('visibilitychange', poll);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', poll);
+    };
+  }, []);
+
   const handleSearch = useCallback(() => {
     setSearchError('');
     var v = nim.trim();
@@ -128,7 +152,7 @@ function App() {
         onAddAgenda={addAgenda}
         onRemoveAgenda={removeAgenda}
         lastUpdate={lastUpdate}
-        dataRows={window.DATA_ROWS || 0}
+        dataRows={dataRows}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />

@@ -12,6 +12,15 @@ const SvgClose = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
 );
 
+/* Default tanggal agenda: hari ini, tapi tidak sebelum hari pertama ujian */
+function defaultAgendaDate() {
+  var d = new Date();
+  var pad = n => String(n).padStart(2, '0');
+  var today = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  var min = window.DATA_DATE_MIN || '';
+  return min && today < min ? min : today;
+}
+
 /* ── Sidebar (single panel) ── */
 function Sidebar(props) {
   const {
@@ -21,7 +30,7 @@ function Sidebar(props) {
     isOpen, onClose,
   } = props;
 
-  const [agDate, setAgDate] = useState('2026-06-25');
+  const [agDate, setAgDate] = useState(defaultAgendaDate);
   const [agTitle, setAgTitle] = useState('');
   const [agStart, setAgStart] = useState('08:00');
   const [agEnd, setAgEnd] = useState('10:00');

@@ -40,6 +40,8 @@ DOWNLOAD_HEADERS = {
     "Accept-Encoding": "identity",
 }
 
+# Link "Anyone" SharePoint memasang cookie tamu di redirect pertama, baru
+# diarahkan ke file. requests.get membawa cookie antar-redirect secara otomatis.
 try:
     resp = requests.get(SHAREPOINT_URL, headers=DOWNLOAD_HEADERS, timeout=30, allow_redirects=True)
 except Exception as ex:
@@ -55,6 +57,12 @@ print(
 if resp.status_code != 200:
     print(f"ERROR: HTTP {resp.status_code}")
     print("Body:", resp.content[:200].decode(errors="replace"))
+    sys.exit(1)
+
+if "login.microsoftonline.com" in resp.url or "html" in resp.headers.get("Content-Type", "").lower():
+    print("ERROR: SharePoint mengembalikan halaman login/HTML, bukan file.")
+    print("       Pastikan link sharing diset 'Anyone (doesn't require sign-in)'")
+    print("       dan secret SHAREPOINT_URL berisi link tersebut.")
     sys.exit(1)
 
 
@@ -232,20 +240,45 @@ for i in ("1", "2", "3"):
 # Buang kolom Unnamed yang masih lolos
 df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
 
+# Buang data pribadi (no. HP, rekening bank, link grup WA) — CSV ini di-commit
+# ke repo publik, dan tidak ada kolom tsb yang dipakai frontend/admin.
+PRIVATE_COLUMN_PREFIXES = ("nomor hp", "no hp", "no. hp", "bank", "norek", "wag")
+private_cols = [c for c in df.columns if str(c).strip().lower().startswith(PRIVATE_COLUMN_PREFIXES)]
+if private_cols:
+    df = df.drop(columns=private_cols)
+    print(f"  Kolom pribadi dibuang: {private_cols}")
+
 print(f"After clean: {df.shape[0]} rows × {df.shape[1]} cols")
+
+if df.empty:
+    # Jangan timpa data yang sudah terpublikasi dengan file kosong.
+    print("ERROR: Hasil parse kosong — data lama dipertahankan.")
+    sys.exit(1)
 
 
 # ── Simpan ───────────────────────────────────────────────────────────────────
 os.makedirs("data", exist_ok=True)
 output_path = "data/jadwal.csv"
-df.to_csv(output_path, index=False, encoding="utf-8-sig")
-print(f"Saved: {output_path}")
+new_csv = df.to_csv(index=False, encoding="utf-8-sig", lineterminator="\n")
 
-# Simpan timestamp terakhir update (jadi fallback bila git log gagal di
-# generate_data_js.py)
-ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-with open("data/last_updated.txt", "w") as f:
-    f.write(ts)
-print(f"Timestamp: {ts}")
+old_csv = None
+if os.path.exists(output_path):
+    with open(output_path, encoding="utf-8-sig", newline="") as f:
+        old_csv = f.read()
+
+if old_csv == new_csv:
+    # Timestamp juga tidak disentuh → tidak ada commit kosong tiap cron jalan.
+    print(f"Tidak ada perubahan isi — {output_path} tidak ditulis ulang.")
+else:
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(new_csv)
+    print(f"Saved: {output_path}")
+
+    # Simpan timestamp terakhir update (jadi fallback bila git log gagal di
+    # generate_data_js.py)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    with open("data/last_updated.txt", "w") as f:
+        f.write(ts)
+    print(f"Timestamp: {ts}")
 
 print("✓ Selesai")
